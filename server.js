@@ -18,18 +18,16 @@ async function connectDB() {
     db = client.db('pixelraiders');
     console.log('MongoDB connected');
   } catch(e) {
-    console.error('MongoDB connection failed:', e.message);
+    console.error('MongoDB failed:', e.message);
     setTimeout(connectDB, 5000);
   }
 }
 connectDB();
 
 function getDB() {
-  if (!db) throw new Error('Database not ready yet');
+  if (!db) throw new Error('Database not ready');
   return db;
 }
 
 let waitingPlayer = null;
 let rooms = {};
-
-app.get('/leade
