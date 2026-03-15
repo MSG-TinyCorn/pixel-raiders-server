@@ -29,8 +29,14 @@ function getDB() {
   return db;
 }
 
-let waitingPlayer = null;
 let rooms = {};
+let duoQueue = null;
+let trioQueue = [];
+
+function makeRoomId() {
+  return Math.random().toString(36).substring(2, 10);
+}
+
 app.get('/leaderboard', async (req, res) => {
   try {
     const d = getDB();
@@ -66,35 +72,66 @@ app.post('/create-revive', async (req, res) => {
 });
 
 io.on('connection', socket => {
-  socket.on('find-match', () => {
-    if (waitingPlayer && waitingPlayer.id !== socket.id) {
-      const roomId = socket.id + waitingPlayer.id;
-      const p1 = waitingPlayer;
-      waitingPlayer = null;
-      rooms[roomId] = { players: [p1.id, socket.id] };
+
+  socket.on('find-duo', () => {
+    if (duoQueue && duoQueue.id !== socket.id) {
+      const roomId = makeRoomId();
+      const p1 = duoQueue;
+      duoQueue = null;
+      rooms[roomId] = { players: [p1.id, socket.id], mode: 'duo' };
       p1.join(roomId); socket.join(roomId);
-      io.to(p1.id).emit('match-found', {roomId, color:'red', isHost:true});
-      io.to(socket.id).emit('match-found', {roomId, color:'blue', isHost:false});
+      io.to(p1.id).emit('match-found', { roomId, color: 'red', mode: 'duo', players: 2 });
+      io.to(socket.id).emit('match-found', { roomId, color: 'blue', mode: 'duo', players: 2 });
     } else {
-      waitingPlayer = socket;
+      duoQueue = socket;
       socket.emit('waiting');
     }
   });
+
+  socket.on('find-trio', () => {
+    trioQueue = trioQueue.filter(s => s.id !== socket.id);
+    trioQueue.push(socket);
+    socket.emit('waiting', { inQueue: trioQueue.length });
+    if (trioQueue.length >= 3) {
+      const roomId = makeRoomId();
+      const players = trioQueue.splice(0, 3);
+      const colors = ['red', 'blue', 'green'];
+      rooms[roomId] = { players: players.map(p => p.id), mode: 'trio' };
+      players.forEach((p, i) => {
+        p.join(roomId);
+        io.to(p.id).emit('match-found', { roomId, color: colors[i], mode: 'trio', players: 3 });
+      });
+    }
+  });
+
+  socket.on('start-with-robots', (data) => {
+    const { roomId, presentColors } = data;
+    socket.to(roomId).emit('start-with-robots', { presentColors });
+  });
+
   socket.on('game-state', data => socket.to(data.roomId).emit('partner-state', data));
   socket.on('enemy-killed', data => socket.to(data.roomId).emit('enemy-killed', data));
-  socket.on('player-died', data => socket.to(data.roomId).emit('partner-died'));
-  socket.on('cancel-match', () => { if (waitingPlayer && waitingPlayer.id === socket.id) waitingPlayer = null; });
+  socket.on('player-died', data => socket.to(data.roomId).emit('partner-died', { color: data.color }));
+
+  socket.on('cancel-match', () => {
+    if (duoQueue && duoQueue.id === socket.id) duoQueue = null;
+    trioQueue = trioQueue.filter(s => s.id !== socket.id);
+  });
+
   socket.on('disconnect', () => {
-    if (waitingPlayer && waitingPlayer.id === socket.id) waitingPlayer = null;
+    if (duoQueue && duoQueue.id === socket.id) duoQueue = null;
+    trioQueue = trioQueue.filter(s => s.id !== socket.id);
     for (let roomId in rooms) {
       const room = rooms[roomId];
       if (room.players.includes(socket.id)) {
-        const partnerId = room.players.find(id => id !== socket.id);
-        if (partnerId) io.to(partnerId).emit('partner-left');
-        delete rooms[roomId];
+        const others = room.players.filter(id => id !== socket.id);
+        others.forEach(id => io.to(id).emit('partner-left', { color: room.colors ? room.colors[room.players.indexOf(socket.id)] : 'unknown' }));
+        room.players = room.players.filter(id => id !== socket.id);
+        if (room.players.length === 0) delete rooms[roomId];
       }
     }
   });
 });
 
 server.listen(3000);
+
