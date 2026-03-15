@@ -3,35 +3,41 @@ const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const cors = require('cors');
 const http = require('http');
 const { Server } = require('socket.io');
+const { MongoClient } = require('mongodb');
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: '*' } });
-
 app.use(cors());
 app.use(express.json());
 
-let scores = [];
+let db;
+MongoClient.connect(process.env.MONGODB_URI).then(client => {
+  db = client.db('pixelraiders');
+  console.log('MongoDB connected');
+});
+
 let waitingPlayer = null;
 let rooms = {};
 
-function getThisWeek() {
-  const weekAgo = new Date(Date.now() - 7*24*60*60*1000);
-  return scores.filter(s => new Date(s.date) > weekAgo);
-}
-
-app.get('/leaderboard', (req, res) => {
-  const allTime = [...scores].sort((a,b) => b.score-a.score).slice(0,10);
-  const thisWeek = [...getThisWeek()].sort((a,b) => b.score-a.score).slice(0,10);
-  res.json({ allTime, thisWeek });
+app.get('/leaderboard', async (req, res) => {
+  try {
+    const allTime = await db.collection('scores').find().sort({ score: -1 }).limit(10).toArray();
+    const weekAgo = new Date(Date.now() - 7*24*60*60*1000);
+    const thisWeek = await db.collection('scores').find({ date: { $gte: weekAgo } }).sort({ score: -1 }).limit(10).toArray();
+    res.json({ allTime, thisWeek });
+  } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-app.post('/submit-score', (req, res) => {
-  const { name, score, wave } = req.body;
-  if (!name || typeof score !== 'number') return res.status(400).json({ error: 'Invalid' });
-  scores.push({ name: name.substring(0,12).toUpperCase(), score, wave, date: new Date().toISOString() });
-  scores = scores.sort((a,b) => b.score-a.score).slice(0,100);
-  res.json({ success: true });
+app.post('/submit-score', async (req, res) => {
+  try {
+    const { name, score, wave } = req.body;
+    if (!name || typeof score !== 'number') return res.status(400).json({ error: 'Invalid' });
+    await db.collection('scores').insertOne({
+      name: name.substring(0, 12).toUpperCase(), score, wave, date: new Date()
+    });
+    res.json({ success: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post('/create-payment', async (req, res) => {
@@ -55,8 +61,7 @@ io.on('connection', socket => {
       const p1 = waitingPlayer;
       waitingPlayer = null;
       rooms[roomId] = { players: [p1.id, socket.id] };
-      p1.join(roomId);
-      socket.join(roomId);
+      p1.join(roomId); socket.join(roomId);
       io.to(p1.id).emit('match-found', { roomId, color: 'red', isHost: true });
       io.to(socket.id).emit('match-found', { roomId, color: 'blue', isHost: false });
     } else {
@@ -64,19 +69,9 @@ io.on('connection', socket => {
       socket.emit('waiting');
     }
   });
-
-  socket.on('game-state', (data) => {
-    socket.to(data.roomId).emit('partner-state', data);
-  });
-
-  socket.on('enemy-killed', (data) => {
-    socket.to(data.roomId).emit('enemy-killed', data);
-  });
-
-  socket.on('cancel-match', () => {
-    if (waitingPlayer && waitingPlayer.id === socket.id) waitingPlayer = null;
-  });
-
+  socket.on('game-state', data => socket.to(data.roomId).emit('partner-state', data));
+  socket.on('enemy-killed', data => socket.to(data.roomId).emit('enemy-killed', data));
+  socket.on('cancel-match', () => { if (waitingPlayer && waitingPlayer.id === socket.id) waitingPlayer = null; });
   socket.on('disconnect', () => {
     if (waitingPlayer && waitingPlayer.id === socket.id) waitingPlayer = null;
     for (let roomId in rooms) {
