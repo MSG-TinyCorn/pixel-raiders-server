@@ -40,9 +40,11 @@ function makeRoomId() {
 app.get('/leaderboard', async (req, res) => {
   try {
     const d = getDB();
-    const allTime = await d.collection('scores').find().sort({score:-1}).limit(10).toArray();
+    const mode = req.query.mode || 'solo';
+    const col = 'scores_' + mode;
+    const allTime = await d.collection(col).find().sort({score:-1}).limit(10).toArray();
     const weekAgo = new Date(Date.now() - 7*24*60*60*1000);
-    const thisWeek = await d.collection('scores').find({date:{$gte:weekAgo}}).sort({score:-1}).limit(10).toArray();
+    const thisWeek = await d.collection(col).find({date:{$gte:weekAgo}}).sort({score:-1}).limit(10).toArray();
     res.json({ allTime, thisWeek });
   } catch(e) { res.status(503).json({ error: e.message }); }
 });
@@ -50,9 +52,10 @@ app.get('/leaderboard', async (req, res) => {
 app.post('/submit-score', async (req, res) => {
   try {
     const d = getDB();
-    const { name, score, wave } = req.body;
+    const { name, score, wave, mode } = req.body;
     if (!name || typeof score !== 'number') return res.status(400).json({error:'Invalid'});
-    await d.collection('scores').insertOne({name:name.substring(0,12).toUpperCase(),score,wave,date:new Date()});
+    const col = 'scores_' + (mode || 'solo');
+    await d.collection(col).insertOne({name:name.substring(0,12).toUpperCase(),score,wave,date:new Date()});
     res.json({ success: true });
   } catch(e) { res.status(503).json({ error: e.message }); }
 });
