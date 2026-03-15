@@ -29,6 +29,8 @@ function getDB() {
   return db;
 }
 
+const eloCache = {};
+
 let rooms = {};
 let duoQueue = null;
 let trioQueue = [];
@@ -81,7 +83,7 @@ app.post('/update-elo', async (req, res) => {
       await d.collection('elo').updateOne({ name: name.toUpperCase() }, { $set: { elo: newElo, updatedAt: new Date() } });
       res.json({ elo: newElo });
     } else {
-      const startElo = Math.max(0, 1000 + change);
+      const startElo = Math.max(0, 0 + change);
       await d.collection('elo').insertOne({ name: name.toUpperCase(), elo: startElo, createdAt: new Date(), updatedAt: new Date() });
       res.json({ elo: startElo });
     }
@@ -94,7 +96,7 @@ app.get('/get-elo', async (req, res) => {
     const name = req.query.name;
     if (!name) return res.status(400).json({error:'Invalid'});
     const existing = await d.collection('elo').findOne({ name: name.toUpperCase() });
-    res.json({ elo: existing ? existing.elo : 1000 });
+    res.json({ elo: existing ? existing.elo : 0 });
   } catch(e) { res.status(503).json({ error: e.message }); }
 });
 
@@ -113,14 +115,18 @@ app.post('/create-revive', async (req, res) => {
 });
 io.on('connection', socket => {
 
+  socket.on('share-elo', (data) => {
+    eloCache[socket.id] = data.elo || 0;
+  });
+
   socket.on('find-duo', () => {
     if (duoQueue && duoQueue.id !== socket.id) {
       const roomId = makeRoomId();
       const p1 = duoQueue; duoQueue = null;
       rooms[roomId] = { players: [p1.id, socket.id], mode: 'duo' };
       p1.join(roomId); socket.join(roomId);
-      io.to(p1.id).emit('match-found', { roomId, color: 'red', mode: 'duo', players: 2 });
-      io.to(socket.id).emit('match-found', { roomId, color: 'blue', mode: 'duo', players: 2 });
+      io.to(p1.id).emit('match-found', { roomId, color: 'red', mode: 'duo', players: 2, oppElo: eloCache[socket.id]||0 });
+      io.to(socket.id).emit('match-found', { roomId, color: 'blue', mode: 'duo', players: 2, oppElo: eloCache[p1.id]||0 });
     } else { duoQueue = socket; socket.emit('waiting'); }
   });
 
@@ -133,8 +139,10 @@ io.on('connection', socket => {
       const players = trioQueue.splice(0, 3);
       rooms[roomId] = { players: players.map(p => p.id), mode: 'trio' };
       players.forEach((p, i) => {
+        const others = players.filter((_,j) => j !== i);
+        const avgOppElo = Math.round(others.reduce((s,o) => s + (eloCache[o.id]||0), 0) / others.length);
         p.join(roomId);
-        io.to(p.id).emit('match-found', { roomId, color: ['red','blue','green'][i], mode: 'trio', players: 3 });
+        io.to(p.id).emit('match-found', { roomId, color: ['red','blue','green'][i], mode: 'trio', players: 3, oppElo: avgOppElo });
       });
     }
   });
@@ -145,8 +153,8 @@ io.on('connection', socket => {
       const p1 = battleQueue; battleQueue = null;
       rooms[roomId] = { players: [p1.id, socket.id], mode: 'battle' };
       p1.join(roomId); socket.join(roomId);
-      io.to(p1.id).emit('battle-found', { roomId, side: 'bottom' });
-      io.to(socket.id).emit('battle-found', { roomId, side: 'top' });
+      io.to(p1.id).emit('battle-found', { roomId, side: 'bottom', oppElo: eloCache[socket.id]||0 });
+      io.to(socket.id).emit('battle-found', { roomId, side: 'top', oppElo: eloCache[p1.id]||0 });
     } else { battleQueue = socket; socket.emit('waiting'); }
   });
 
@@ -168,6 +176,7 @@ io.on('connection', socket => {
     if (duoQueue && duoQueue.id === socket.id) duoQueue = null;
     if (battleQueue && battleQueue.id === socket.id) battleQueue = null;
     trioQueue = trioQueue.filter(s => s.id !== socket.id);
+    delete eloCache[socket.id];
     for (let roomId in rooms) {
       const room = rooms[roomId];
       if (room.players.includes(socket.id)) {
@@ -182,4 +191,3 @@ io.on('connection', socket => {
 });
 
 server.listen(3000);
-
