@@ -82,6 +82,7 @@ io.on('connection', socket => {
   });
   socket.on('game-state', data => socket.to(data.roomId).emit('partner-state', data));
   socket.on('enemy-killed', data => socket.to(data.roomId).emit('enemy-killed', data));
+  socket.on('player-died', data => socket.to(data.roomId).emit('partner-died'));
   socket.on('cancel-match', () => { if (waitingPlayer && waitingPlayer.id === socket.id) waitingPlayer = null; });
   socket.on('disconnect', () => {
     if (waitingPlayer && waitingPlayer.id === socket.id) waitingPlayer = null;
