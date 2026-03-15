@@ -30,5 +30,15 @@ app.post('/create-payment', async (req, res) => {
     res.status(500).json({ error: e.message });
   }
 });
-
+app.post('/create-revive', async (req, res) => {
+  try {
+    const intent = await stripe.paymentIntents.create({
+      amount: 30,
+      currency: 'gbp',
+    });
+    res.json({ clientSecret: intent.client_secret });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 app.listen(3000);
